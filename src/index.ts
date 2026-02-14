@@ -1,4 +1,5 @@
 import ExcelJS from 'exceljs';
+import { DateTime } from 'luxon';
 import { Readable } from 'node:stream';
 import type { Writable } from 'node:stream';
 import type { ReadableStream as NodeWebReadableStream } from 'node:stream/web';
@@ -8,19 +9,6 @@ export type ExcelOutput = string | Writable;
 export type RowObject = Record<string, unknown>;
 
 type MaybeAsyncIterable<T> = Iterable<T> | AsyncIterable<T>;
-
-type ReaderCacheMode = 'cache' | 'emit' | 'ignore';
-type ReaderStylesMode = 'cache' | 'ignore';
-
-interface DateTimeParts {
-  year: number;
-  month: number;
-  day: number;
-  hour: number;
-  minute: number;
-  second: number;
-  millisecond: number;
-}
 
 export interface XlsxReadOptions {
   sheetName?: string;
@@ -37,8 +25,6 @@ export interface XlsxReadOptions {
   parseDates?: boolean;
   date1904?: boolean;
   timeZone?: string;
-  sharedStringsMode?: ReaderCacheMode;
-  stylesMode?: ReaderStylesMode;
 }
 
 export interface XlsxWriteColumn<T extends RowObject = RowObject> {
@@ -61,8 +47,6 @@ export interface ProcessLargeOptions extends XlsxReadOptions {
   concurrency?: number;
 }
 
-const formatterCache = new Map<string, Intl.DateTimeFormat>();
-
 function isAsyncIterable<T>(value: unknown): value is AsyncIterable<T> {
   return (
     typeof value === 'object' &&
@@ -70,6 +54,32 @@ function isAsyncIterable<T>(value: unknown): value is AsyncIterable<T> {
     Symbol.asyncIterator in value &&
     typeof (value as AsyncIterable<T>)[Symbol.asyncIterator] === 'function'
   );
+}
+
+function isWritableOutput(output: ExcelOutput): output is Writable {
+  return typeof output !== 'string';
+}
+
+async function waitForWritableDrain(output: Writable): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const onDrain = () => {
+      cleanup();
+      resolve();
+    };
+
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+
+    const cleanup = () => {
+      output.off('drain', onDrain);
+      output.off('error', onError);
+    };
+
+    output.on('drain', onDrain);
+    output.on('error', onError);
+  });
 }
 
 async function* toAsyncIterable<T>(
@@ -83,133 +93,6 @@ async function* toAsyncIterable<T>(
   for (const row of rows) {
     yield row;
   }
-}
-
-function assertValidDate(date: Date, label: string): void {
-  if (Number.isNaN(date.getTime())) {
-    throw new Error(`Invalid ${label}`);
-  }
-}
-
-function assertValidTimeZone(timeZone: string): void {
-  try {
-    new Intl.DateTimeFormat('en-US', { timeZone }).format(new Date());
-  } catch {
-    throw new Error(`Invalid time zone: ${timeZone}`);
-  }
-}
-
-function getTimeZoneFormatter(timeZone: string): Intl.DateTimeFormat {
-  const cached = formatterCache.get(timeZone);
-  if (cached) {
-    return cached;
-  }
-
-  const formatter = new Intl.DateTimeFormat('en-CA', {
-    timeZone,
-    hour12: false,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  });
-
-  formatterCache.set(timeZone, formatter);
-  return formatter;
-}
-
-function getTimeZoneParts(date: Date, timeZone: string): DateTimeParts {
-  const formatter = getTimeZoneFormatter(timeZone);
-  const parts = formatter.formatToParts(date);
-  const values = new Map<string, string>();
-
-  for (const part of parts) {
-    if (part.type !== 'literal') {
-      values.set(part.type, part.value);
-    }
-  }
-
-  const year = Number(values.get('year'));
-  const month = Number(values.get('month'));
-  const day = Number(values.get('day'));
-  const hour = Number(values.get('hour'));
-  const minute = Number(values.get('minute'));
-  const second = Number(values.get('second'));
-
-  if (
-    [year, month, day, hour, minute, second].some((value) =>
-      Number.isNaN(value),
-    )
-  ) {
-    throw new Error(`Unable to parse date parts for time zone: ${timeZone}`);
-  }
-
-  return {
-    year,
-    month,
-    day,
-    hour,
-    minute,
-    second,
-    millisecond: date.getUTCMilliseconds(),
-  };
-}
-
-function toUtcMillis(parts: DateTimeParts): number {
-  return Date.UTC(
-    parts.year,
-    parts.month - 1,
-    parts.day,
-    parts.hour,
-    parts.minute,
-    parts.second,
-    parts.millisecond,
-  );
-}
-
-function getTimeZoneOffsetMs(date: Date, timeZone: string): number {
-  const zoned = getTimeZoneParts(date, timeZone);
-  return toUtcMillis(zoned) - date.getTime();
-}
-
-function localDateTimeInZoneToUtc(
-  parts: DateTimeParts,
-  timeZone: string,
-): Date {
-  const localAsUtc = toUtcMillis(parts);
-  let guess = localAsUtc;
-
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    const offset = getTimeZoneOffsetMs(new Date(guess), timeZone);
-    const next = localAsUtc - offset;
-    if (next === guess) {
-      break;
-    }
-
-    guess = next;
-  }
-
-  return new Date(guess);
-}
-
-function replaceDateTimeZoneByUserTimeZone(date: Date, timeZone: string): Date {
-  assertValidDate(date, 'date');
-  assertValidTimeZone(timeZone);
-
-  return localDateTimeInZoneToUtc(
-    {
-      year: date.getUTCFullYear(),
-      month: date.getUTCMonth() + 1,
-      day: date.getUTCDate(),
-      hour: date.getUTCHours(),
-      minute: date.getUTCMinutes(),
-      second: date.getUTCSeconds(),
-      millisecond: date.getUTCMilliseconds(),
-    },
-    timeZone,
-  );
 }
 
 function isEmptyRow(values: unknown[]): boolean {
@@ -239,14 +122,35 @@ function excelSerialToDate(serial: number, date1904: boolean): Date {
 }
 
 function reinterpretDateToTimeZone(date: Date, timeZone: string): Date {
-  return replaceDateTimeZoneByUserTimeZone(date, timeZone);
+  const reinterpreted = DateTime.fromObject(
+    {
+      year: date.getUTCFullYear(),
+      month: date.getUTCMonth() + 1,
+      day: date.getUTCDate(),
+      hour: date.getUTCHours(),
+      minute: date.getUTCMinutes(),
+      second: date.getUTCSeconds(),
+      millisecond: date.getUTCMilliseconds(),
+    },
+    { zone: timeZone },
+  );
+
+  if (!reinterpreted.isValid) {
+    throw new Error(`Invalid time zone: ${timeZone}`);
+  }
+
+  return reinterpreted.toUTC().toJSDate();
 }
 
 function utcDateToExcelLocalDate(dateUtc: Date, timeZone: string): Date {
-  assertValidDate(dateUtc, 'date');
-  assertValidTimeZone(timeZone);
+  const userDate = DateTime.fromJSDate(dateUtc, { zone: 'utc' }).setZone(
+    timeZone,
+  );
 
-  const userDate = getTimeZoneParts(dateUtc, timeZone);
+  if (!userDate.isValid) {
+    throw new Error(`Invalid time zone: ${timeZone}`);
+  }
+
   return new Date(
     userDate.year,
     userDate.month - 1,
@@ -254,7 +158,7 @@ function utcDateToExcelLocalDate(dateUtc: Date, timeZone: string): Date {
     userDate.hour,
     userDate.minute,
     userDate.second,
-    dateUtc.getUTCMilliseconds(),
+    userDate.millisecond,
   );
 }
 
@@ -445,7 +349,7 @@ function headerValueToString(value: unknown): string {
   return '';
 }
 
-export async function* xlsxToObjects<T extends RowObject = RowObject>(
+export async function* xlsxStreamToObjects<T extends RowObject = RowObject>(
   input: ExcelInput,
   opts: XlsxReadOptions = {},
 ): AsyncGenerator<T> {
@@ -463,24 +367,18 @@ export async function* xlsxToObjects<T extends RowObject = RowObject>(
     parseDates = true,
     date1904 = false,
     timeZone,
-    sharedStringsMode = 'cache',
-    stylesMode = parseDates ? 'cache' : 'ignore',
   } = opts;
   const trimTextColumnsSet = new Set(trimTextColumns);
   const arrayColumnsSet = new Set(arrayColumns);
   const normalizeHeader: (header: string, index: number) => string =
     opts.normalizeHeader ?? ((header) => header);
 
-  if (timeZone) {
-    assertValidTimeZone(timeZone);
-  }
-
   const workbook = new ExcelJS.stream.xlsx.WorkbookReader(
     toWorkbookInput(input),
     {
       worksheets: 'emit',
-      sharedStrings: sharedStringsMode,
-      styles: stylesMode,
+      sharedStrings: 'cache',
+      styles: parseDates ? 'cache' : 'ignore',
       hyperlinks: 'ignore',
       entries: 'emit',
     },
@@ -549,7 +447,7 @@ export async function* xlsxToObjects<T extends RowObject = RowObject>(
   }
 }
 
-export async function objectsToXlsx<T extends RowObject>(
+export async function objectsToXlsxStream<T extends RowObject>(
   output: ExcelOutput,
   rows: MaybeAsyncIterable<T>,
   opts: XlsxWriteOptions<T>,
@@ -563,11 +461,7 @@ export async function objectsToXlsx<T extends RowObject>(
     dateColumns = [],
   } = opts;
   const dateColumnsSet = new Set<string>(dateColumns);
-
-  if (timeZone) {
-    assertValidTimeZone(timeZone);
-  }
-
+  const writableOutput = isWritableOutput(output) ? output : null;
   const rowIterator = toAsyncIterable(rows)[Symbol.asyncIterator]();
   const firstRowResult = await rowIterator.next();
 
@@ -603,6 +497,10 @@ export async function objectsToXlsx<T extends RowObject>(
         mapRowForExcelWrite(firstRowResult.value, timeZone, dateColumnsSet),
       )
       .commit();
+
+    if (writableOutput?.writableNeedDrain) {
+      await waitForWritableDrain(writableOutput);
+    }
   }
 
   while (true) {
@@ -614,6 +512,10 @@ export async function objectsToXlsx<T extends RowObject>(
     sheet
       .addRow(mapRowForExcelWrite(rowResult.value, timeZone, dateColumnsSet))
       .commit();
+
+    if (writableOutput?.writableNeedDrain) {
+      await waitForWritableDrain(writableOutput);
+    }
   }
 
   sheet.commit();
@@ -655,7 +557,7 @@ export async function processXlsxLarge<T extends RowObject = RowObject>(
     await Promise.all(inFlight);
   };
 
-  for await (const row of xlsxToObjects<T>(input, readOpts)) {
+  for await (const row of xlsxStreamToObjects<T>(input, readOpts)) {
     batch.push(row);
 
     if (batch.length >= batchSize) {
@@ -667,41 +569,4 @@ export async function processXlsxLarge<T extends RowObject = RowObject>(
   if (batch.length > 0) {
     await runBatch(batch);
   }
-}
-
-export function xlsxFileToObjects<T extends RowObject = RowObject>(
-  filePath: string,
-  opts: XlsxReadOptions = {},
-): AsyncGenerator<T> {
-  return xlsxToObjects<T>(filePath, opts);
-}
-
-export function xlsxReadableToObjects<T extends RowObject = RowObject>(
-  stream: Readable,
-  opts: XlsxReadOptions = {},
-): AsyncGenerator<T> {
-  return xlsxToObjects<T>(stream, opts);
-}
-
-export function xlsxWebReadableToObjects<T extends RowObject = RowObject>(
-  stream: NodeWebReadableStream<Uint8Array>,
-  opts: XlsxReadOptions = {},
-): AsyncGenerator<T> {
-  return xlsxToObjects<T>(stream, opts);
-}
-
-export function objectsToXlsxFile<T extends RowObject>(
-  filePath: string,
-  rows: MaybeAsyncIterable<T>,
-  opts: XlsxWriteOptions<T>,
-): Promise<void> {
-  return objectsToXlsx<T>(filePath, rows, opts);
-}
-
-export function objectsToXlsxWritable<T extends RowObject>(
-  writable: Writable,
-  rows: MaybeAsyncIterable<T>,
-  opts: XlsxWriteOptions<T>,
-): Promise<void> {
-  return objectsToXlsx<T>(writable, rows, opts);
 }
