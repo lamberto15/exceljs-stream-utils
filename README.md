@@ -247,23 +247,3 @@ bun run build
 ```
 
 Release flow follows the local `npm-publish` skill process.
-
-## CI/CD release flow
-
-- Workflow file in this package: `.github/workflows/release.yml`
-- Pull requests and pushes to `main` run package build validation with Bun.
-- Publishing is done manually from your local machine with Bun after commit and push.
-
-Required repository secrets:
-
-- None required for package publishing in GitHub Actions.
-
-Manual publishing checklist:
-
-1. `npm whoami` (must be logged in)
-2. Bump the `version` in `package.json` (for `0.x.x`, bump patch by default)
-3. Update `CHANGELOG.md` (if present)
-4. Commit and push your release changes first
-5. `bun run build`
-6. `bun publish --access public --otp <code>`
-7. `npm view exceljs-stream-utils version` (verify published version)
