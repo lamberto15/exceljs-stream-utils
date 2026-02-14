@@ -1,0 +1,37 @@
+{
+  "name": "exceljs-stream-utils",
+  "version": "0.1.0",
+  "description": "Streaming Excel read/write utilities built on top of exceljs",
+  "license": "MIT",
+  "private": false,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lamberto15/exceljs-stream-utils.git"
+  },
+  "bugs": {
+    "url": "https://github.com/lamberto15/exceljs-stream-utils/issues"
+  },
+  "homepage": "https://github.com/lamberto15/exceljs-stream-utils#readme",
+  "dependencies": {
+    "exceljs": "^4.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "typescript": "^5.8.2"
+  }
+}
