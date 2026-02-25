@@ -1,4 +1,4 @@
-import ExcelJS from 'exceljs';
+import ExcelJS from '@protobi/exceljs';
 import { DateTime } from 'luxon';
 import { Readable } from 'node:stream';
 import type { Writable } from 'node:stream';
