@@ -28,7 +28,7 @@
   },
   "homepage": "https://github.com/lamberto15/exceljs-stream-utils#readme",
   "dependencies": {
-    "exceljs": "^4.4.0",
+    "@protobi/exceljs": "^4.4.0-protobi.9",
     "luxon": "^3.7.2"
   },
   "devDependencies": {
