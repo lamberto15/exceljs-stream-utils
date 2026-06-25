@@ -1,6 +1,6 @@
 {
   "name": "exceljs-stream-utils",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Streaming Excel read/write utilities built on top of exceljs",
   "author": "Lamberto Tamayo <lambertotamayo15@gmail.com>",
   "license": "MIT",
@@ -18,7 +18,8 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "README.md"
   ],
   "engines": {
     "node": ">=18"
