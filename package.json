@@ -1,11 +1,22 @@
 {
   "name": "exceljs-stream-utils",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Streaming Excel read/write utilities built on top of exceljs",
+  "author": "Lamberto Tamayo <lambertotamayo15@gmail.com>",
   "license": "MIT",
   "private": false,
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./v2": {
+      "types": "./dist/v2.d.ts",
+      "default": "./dist/v2.js"
+    }
+  },
   "files": [
     "dist"
   ],
@@ -14,7 +25,8 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "test": "bun test"
   },
   "publishConfig": {
     "access": "public"
@@ -28,7 +40,7 @@
   },
   "homepage": "https://github.com/lamberto15/exceljs-stream-utils#readme",
   "dependencies": {
-    "@protobi/exceljs": "^4.4.0-protobi.9",
+    "@protobi/exceljs": "^4.4.0-protobi.10",
     "luxon": "^3.7.2"
   },
   "devDependencies": {
