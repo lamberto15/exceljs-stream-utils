@@ -1,6 +1,6 @@
 # exceljs-stream-utils
 
-Streaming Excel helpers built on top of `exceljs`.
+Streaming Excel helpers built on top of `@protobi/exceljs`, a maintained ExcelJS-based streaming implementation.
 
 - Read `.xlsx` as async objects
 - Write iterable or async-iterable rows to `.xlsx`
@@ -17,25 +17,71 @@ Streaming Excel helpers built on top of `exceljs`.
 npm install exceljs-stream-utils
 ```
 
-`exceljs` is installed automatically as a dependency of this package.
+`@protobi/exceljs` is installed automatically as a dependency of this package.
+
+This package builds on top of:
+
+- [`@protobi/exceljs`](https://www.npmjs.com/package/@protobi/exceljs) for Excel workbook streaming support
+- [`luxon`](https://www.npmjs.com/package/luxon) for time zone aware date conversion
 
 ## API
 
+The package now has two entrypoints:
+
+- `exceljs-stream-utils`: existing behavior, kept stable for compatibility
+- `exceljs-stream-utils/v2`: improved behavior for new code
+
 ### Read
 
-- `xlsxStreamToObjects(input, options)`
+- `readXlsxRows(input, options)`
 
 ### Write
 
-- `objectsToXlsxStream(output, rows, options)`
+- `writeXlsxRows(output, rows, options)`
 
 ### Processing
 
-- `processXlsxLarge(input, handler, options)`
+- `processXlsxRows(input, handler, options)`
+
+Compatibility aliases are still exported:
+
+- `xlsxStreamToObjects`
+- `objectsToXlsxStream`
+- `processXlsxLarge`
+
+## V2
+
+Import from `exceljs-stream-utils/v2` to opt into the safer API without affecting existing users.
+
+```ts
+import {
+  readXlsxRows,
+  writeXlsxRows,
+  processXlsxRows,
+} from 'exceljs-stream-utils/v2';
+```
+
+`v2` currently improves a few edge cases:
+
+- `writeXlsxRows(output, rows)` now works without requiring an options object
+- Formula result cells are normalized through the same date handling path as other cells
+- Duplicate headers are detected by default instead of silently overwriting earlier columns
+- `processXlsxRows` drains in-flight work before surfacing batch errors
+
+Automated Bun tests currently cover:
+
+- file path input and output
+- Node readable and writable stream transport
+- timezone date round-trips
+- array parsing, trimming, and header normalization
+- root API compatibility and legacy aliases
+- a realistic 10,000-row write-and-process scenario
 
 ## Parameters
 
-### `xlsxStreamToObjects(input, options?)`
+Unless noted otherwise, the parameter tables below describe the `/v2` entrypoint. The root entrypoint keeps the older compatibility behavior.
+
+### `readXlsxRows(input, options?)`
 
 `input` types:
 
@@ -58,11 +104,12 @@ npm install exceljs-stream-utils
 | `removeEmptyArrayItems` | `boolean`                       | `true`                            | Remove empty items from split arrays                            |
 | `skipEmptyRows`         | `boolean`                       | `true`                            | Skip rows where all cells are empty                             |
 | `normalizeHeader`       | `(header, index) => string`     | identity                          | Custom header normalizer                                        |
+| `duplicateHeaders`      | `'error' \| 'suffix'`           | `'error'`                         | `/v2` only. Error on duplicate headers or suffix them as `_2`, `_3`, etc. |
 | `parseDates`            | `boolean`                       | `true`                            | Convert date-like numeric cells to `Date`                       |
 | `date1904`              | `boolean`                       | `false`                           | Use Excel 1904 epoch mode                                       |
 | `timeZone`              | `string`                        | `undefined`                       | Reinterpret read date wall-clock in this IANA time zone         |
 
-### `objectsToXlsxStream(output, rows, options?)`
+### `writeXlsxRows(output, rows, options?)`
 
 `output` types:
 
@@ -85,11 +132,11 @@ npm install exceljs-stream-utils
 | `timeZone`         | `string`                                            | `undefined`             | Convert `Date` values to target time zone wall-clock                              |
 | `dateColumns`      | `string[]`                                          | `[]`                    | Restrict timezone conversion to these date columns; empty means all `Date` fields |
 
-### `processXlsxLarge(input, handler, options?)`
+### `processXlsxRows(input, handler, options?)`
 
 Parameters:
 
-- `input` (required): same accepted types as `xlsxStreamToObjects`
+- `input` (required): same accepted types as `readXlsxRows`
 - `handler` (required): `(row) => Promise<void> | void`
 - `options` (optional): all `XlsxReadOptions` plus:
 
@@ -101,13 +148,13 @@ Parameters:
 ## Quick start
 
 ```ts
-import { xlsxStreamToObjects, objectsToXlsxStream } from 'exceljs-stream-utils';
+import { readXlsxRows, writeXlsxRows } from 'exceljs-stream-utils';
 
-for await (const row of xlsxStreamToObjects('/tmp/input.xlsx')) {
+for await (const row of readXlsxRows('/tmp/input.xlsx')) {
   console.log(row);
 }
 
-await objectsToXlsxStream('/tmp/output.xlsx', [{ id: 1, name: 'John' }], {
+await writeXlsxRows('/tmp/output.xlsx', [{ id: 1, name: 'John' }], {
   sheetName: 'Sheet1',
 });
 ```
@@ -117,9 +164,9 @@ await objectsToXlsxStream('/tmp/output.xlsx', [{ id: 1, name: 'John' }], {
 ### 1) Read from file
 
 ```ts
-import { xlsxStreamToObjects } from 'exceljs-stream-utils';
+import { readXlsxRows } from 'exceljs-stream-utils';
 
-for await (const row of xlsxStreamToObjects('/tmp/input.xlsx', {
+for await (const row of readXlsxRows('/tmp/input.xlsx', {
   headerRowNumber: 1,
   trimHeaders: true,
   trimTextValues: true,
@@ -135,9 +182,9 @@ for await (const row of xlsxStreamToObjects('/tmp/input.xlsx', {
 ### 2) Write to file
 
 ```ts
-import { objectsToXlsxStream } from 'exceljs-stream-utils';
+import { writeXlsxRows } from 'exceljs-stream-utils';
 
-await objectsToXlsxStream(
+await writeXlsxRows(
   '/tmp/out.xlsx',
   [
     { accountNumber: '1234', amount: 100, dueDate: new Date() },
@@ -159,14 +206,14 @@ await objectsToXlsxStream(
 ### 3) Write from async iterator
 
 ```ts
-import { objectsToXlsxStream } from 'exceljs-stream-utils';
+import { writeXlsxRows } from 'exceljs-stream-utils';
 
 async function* debtorRows() {
   yield { accountNumber: '1234', amount: 100, dueDate: new Date() };
   yield { accountNumber: '5678', amount: 200, dueDate: new Date() };
 }
 
-await objectsToXlsxStream('/tmp/streamed.xlsx', debtorRows(), {
+await writeXlsxRows('/tmp/streamed.xlsx', debtorRows(), {
   sheetName: 'Debtors',
   columns: [
     { header: 'Account #', key: 'accountNumber' },
@@ -181,7 +228,7 @@ await objectsToXlsxStream('/tmp/streamed.xlsx', debtorRows(), {
 ```ts
 import { PassThrough } from 'node:stream';
 import { Upload } from '@aws-sdk/lib-storage';
-import { objectsToXlsxStream } from 'exceljs-stream-utils';
+import { writeXlsxRows } from 'exceljs-stream-utils';
 
 const pass = new PassThrough();
 
@@ -196,7 +243,7 @@ const upload = new Upload({
 
 const uploadPromise = upload.done();
 
-await objectsToXlsxStream(pass, debtorRows(), {
+await writeXlsxRows(pass, debtorRows(), {
   sheetName: 'Debtors',
   timeZone: 'Asia/Manila',
   dateColumns: ['dueDate'],
@@ -208,9 +255,9 @@ await uploadPromise;
 ### 5) Process very large files in batches
 
 ```ts
-import { processXlsxLarge } from 'exceljs-stream-utils';
+import { processXlsxRows } from 'exceljs-stream-utils';
 
-await processXlsxLarge(
+await processXlsxRows(
   '/tmp/input.xlsx',
   async (row) => {
     // handle one row
@@ -224,12 +271,59 @@ await processXlsxLarge(
 );
 ```
 
+### 6) Export a realistic large dataset
+
+```ts
+import { writeXlsxRows } from 'exceljs-stream-utils/v2';
+
+async function* debtorExportRows() {
+  for (let id = 1; id <= 10000; id += 1) {
+    yield {
+      debtorId: `D-${id.toString().padStart(5, '0')}`,
+      email: `user${id}@example.com`,
+      balanceCents: id * 125,
+      dueDate: new Date('2024-01-01T00:00:00.000Z'),
+      tags: id % 2 === 0 ? 'priority,renewal' : 'standard',
+    };
+  }
+}
+
+await writeXlsxRows('/tmp/debtors.xlsx', debtorExportRows(), {
+  sheetName: 'Debtors',
+  columns: [
+    { header: 'Debtor ID', key: 'debtorId' },
+    { header: 'Email', key: 'email' },
+    { header: 'Balance', key: 'balanceCents' },
+    { header: 'Due Date', key: 'dueDate' },
+    { header: 'Tags', key: 'tags' },
+  ],
+  timeZone: 'Asia/Manila',
+  dateColumns: ['dueDate'],
+});
+```
+
 ## Notes
 
-- `objectsToXlsxStream` supports both `Iterable` and `AsyncIterable` rows.
+- `writeXlsxRows` supports both `Iterable` and `AsyncIterable` rows.
 - `columns` is optional; if omitted, columns are inferred from the first row.
 - Set `timeZone` in read/write options to enable built-in timezone date conversion.
-- `objectsToXlsxStream` accepts either a file path or a Node `Writable` and handles writable backpressure.
+- `writeXlsxRows` accepts either a file path or a Node `Writable` and handles writable backpressure.
+
+## Type Behavior
+
+- String cells are returned as strings.
+- Boolean cells are returned as booleans.
+- Integer and decimal numeric cells are returned as numbers.
+- Empty cells are returned as `null`.
+- Date cells are returned as `Date` objects when date parsing is enabled.
+
+Excel date values are commonly stored as numeric serials plus cell formatting metadata. Because of that, automatic date parsing depends on the workbook indicating that a numeric cell is date-like, usually through its Excel number format. This is a normal Excel parsing constraint, not a Node-specific quirk.
+
+If you want raw numeric serials instead of parsed `Date` values, set:
+
+```ts
+{ parseDates: false }
+```
 
 ## Build and publish
 

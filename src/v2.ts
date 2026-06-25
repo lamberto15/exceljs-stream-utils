@@ -13,6 +13,9 @@ type MaybeAsyncIterable<T> = Iterable<T> | AsyncIterable<T>;
 
 /**
  * Options for reading worksheet rows as plain JavaScript objects.
+ *
+ * The `/v2` reader adds duplicate-header handling so imports fail loudly by
+ * default instead of silently overwriting earlier columns.
  */
 export interface XlsxReadOptions {
   /** Read only the matching worksheet name. Defaults to the first emitted sheet. */
@@ -43,6 +46,8 @@ export interface XlsxReadOptions {
   date1904?: boolean;
   /** Reinterpret parsed dates in the provided IANA time zone. */
   timeZone?: string;
+  /** Fail on duplicate headers or suffix them as `_2`, `_3`, and so on. */
+  duplicateHeaders?: 'error' | 'suffix';
 }
 
 /**
@@ -200,39 +205,6 @@ function utcDateToExcelLocalDate(dateUtc: Date, timeZone: string): Date {
   );
 }
 
-function normalizeCellValue(
-  cell: ExcelJS.Cell,
-  parseDates: boolean,
-  date1904: boolean,
-  timeZone?: string,
-): unknown {
-  const value = cell.value;
-
-  if (value == null) {
-    return null;
-  }
-
-  if (value instanceof Date) {
-    return timeZone ? reinterpretDateToTimeZone(value, timeZone) : value;
-  }
-
-  if (typeof value === 'object' && 'result' in value) {
-    return (value as ExcelJS.CellFormulaValue).result ?? null;
-  }
-
-  if (
-    parseDates &&
-    typeof value === 'number' &&
-    typeof cell.numFmt === 'string' &&
-    /[dmyhs]/i.test(cell.numFmt)
-  ) {
-    const date = excelSerialToDate(value, date1904);
-    return timeZone ? reinterpretDateToTimeZone(date, timeZone) : date;
-  }
-
-  return value;
-}
-
 function maybeTrimTextValue(value: unknown, trimTextValues: boolean): unknown {
   if (!trimTextValues || typeof value !== 'string') {
     return value;
@@ -387,10 +359,112 @@ function headerValueToString(value: unknown): string {
   return '';
 }
 
+function normalizeCellRawValue(cell: ExcelJS.Cell): unknown {
+  const value = cell.value;
+
+  if (value == null) {
+    return null;
+  }
+
+  if (
+    typeof value === 'object' &&
+    value !== null &&
+    'result' in value
+  ) {
+    return (value as ExcelJS.CellFormulaValue).result ?? null;
+  }
+
+  return value;
+}
+
+function normalizeCellValue(
+  cell: ExcelJS.Cell,
+  parseDates: boolean,
+  date1904: boolean,
+  timeZone?: string,
+): unknown {
+  const value = normalizeCellRawValue(cell);
+
+  if (value == null) {
+    return null;
+  }
+
+  if (value instanceof Date) {
+    return timeZone ? reinterpretDateToTimeZone(value, timeZone) : value;
+  }
+
+  if (
+    parseDates &&
+    typeof value === 'number' &&
+    typeof cell.numFmt === 'string' &&
+    /[dmyhs]/i.test(cell.numFmt)
+  ) {
+    const date = excelSerialToDate(value, date1904);
+    return timeZone ? reinterpretDateToTimeZone(date, timeZone) : date;
+  }
+
+  return value;
+}
+
+function buildHeaders(
+  values: unknown[],
+  trimHeaders: boolean,
+  normalizeHeader: (header: string, index: number) => string,
+  duplicateHeaders: 'error' | 'suffix',
+): string[] {
+  const usedHeaders = new Map<string, number>();
+
+  return Array.from({ length: values.length }, (_, index) => {
+    const value = values[index];
+    let header = headerValueToString(value);
+
+    if (trimHeaders) {
+      header = header.trim();
+    }
+
+    header = normalizeHeader(header, index) || `column_${index + 1}`;
+    const seen = usedHeaders.get(header) ?? 0;
+
+    if (seen === 0) {
+      usedHeaders.set(header, 1);
+      return header;
+    }
+
+    if (duplicateHeaders === 'error') {
+      throw new Error(
+        `Duplicate header "${header}" at column ${index + 1}.`,
+      );
+    }
+
+    const uniqueHeader = `${header}_${seen + 1}`;
+    usedHeaders.set(header, seen + 1);
+    usedHeaders.set(uniqueHeader, 1);
+    return uniqueHeader;
+  });
+}
+
+async function waitForBatchSlot(
+  inFlight: Set<Promise<void>>,
+  errors: Error[],
+): Promise<void> {
+  while (inFlight.size > 0) {
+    await Promise.race(inFlight);
+
+    if (errors.length > 0) {
+      await Promise.allSettled(inFlight);
+      throw errors[0];
+    }
+
+    return;
+  }
+}
+
 /**
  * Stream worksheet rows as plain objects using the selected header row for keys.
  *
  * Accepts a file path, a Node readable stream, or a Web readable stream.
+ * In `/v2`, duplicate headers are handled explicitly instead of silently
+ * overwriting earlier columns.
  */
 export async function* readXlsxRows<T extends RowObject = RowObject>(
   input: ExcelInput,
@@ -410,6 +484,7 @@ export async function* readXlsxRows<T extends RowObject = RowObject>(
     parseDates = true,
     date1904 = false,
     timeZone,
+    duplicateHeaders = 'error',
   } = opts;
   const trimTextColumnsSet = new Set(trimTextColumns);
   const arrayColumnsSet = new Set(arrayColumns);
@@ -445,16 +520,12 @@ export async function* readXlsxRows<T extends RowObject = RowObject>(
       }
 
       if (row.number === headerRowNumber) {
-        headers = values.map((value, index) => {
-          let header = headerValueToString(value);
-
-          if (trimHeaders) {
-            header = header.trim();
-          }
-
-          header = normalizeHeader(header, index);
-          return header || `column_${index + 1}`;
-        });
+        headers = buildHeaders(
+          values,
+          trimHeaders,
+          normalizeHeader,
+          duplicateHeaders,
+        );
         continue;
       }
 
@@ -494,11 +565,12 @@ export async function* readXlsxRows<T extends RowObject = RowObject>(
  * Write iterable or async-iterable row objects to an `.xlsx` file or writable stream.
  *
  * When `columns` is omitted, the first row is used to infer column order and headers.
+ * In `/v2`, the options object is optional for the common case.
  */
 export async function writeXlsxRows<T extends RowObject>(
   output: ExcelOutput,
   rows: MaybeAsyncIterable<T>,
-  opts: XlsxWriteOptions<T>,
+  opts: XlsxWriteOptions<T> = {},
 ): Promise<void> {
   const {
     sheetName = 'Sheet1',
@@ -573,8 +645,8 @@ export async function writeXlsxRows<T extends RowObject>(
 /**
  * Read a large worksheet and process rows in batches with bounded concurrency.
  *
- * This is useful for imports where you want predictable memory use while still
- * handling many rows in parallel.
+ * `/v2` drains in-flight handlers before surfacing the first batch error so
+ * callers do not end up with stray unhandled rejections.
  */
 export async function processXlsxRows<T extends RowObject = RowObject>(
   input: ExcelInput,
@@ -595,20 +667,32 @@ export async function processXlsxRows<T extends RowObject = RowObject>(
 
   const runBatch = async (items: T[]): Promise<void> => {
     const inFlight = new Set<Promise<void>>();
+    const errors: Error[] = [];
 
     for (const item of items) {
-      const promise = Promise.resolve().then(() => handler(item));
+      const promise = Promise.resolve()
+        .then(() => handler(item))
+        .catch((error: unknown) => {
+          errors.push(
+            error instanceof Error ? error : new Error(String(error)),
+          );
+        });
+
       inFlight.add(promise);
       void promise.finally(() => {
         inFlight.delete(promise);
       });
 
       if (inFlight.size >= concurrency) {
-        await Promise.race(inFlight);
+        await waitForBatchSlot(inFlight, errors);
       }
     }
 
-    await Promise.all(inFlight);
+    await Promise.allSettled(inFlight);
+
+    if (errors.length > 0) {
+      throw errors[0];
+    }
   };
 
   for await (const row of readXlsxRows<T>(input, readOpts)) {
@@ -624,12 +708,3 @@ export async function processXlsxRows<T extends RowObject = RowObject>(
     await runBatch(batch);
   }
 }
-
-/** @deprecated Use readXlsxRows instead. */
-export const xlsxStreamToObjects = readXlsxRows;
-
-/** @deprecated Use writeXlsxRows instead. */
-export const objectsToXlsxStream = writeXlsxRows;
-
-/** @deprecated Use processXlsxRows instead. */
-export const processXlsxLarge = processXlsxRows;
